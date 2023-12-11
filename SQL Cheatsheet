@@ -1,0 +1,262 @@
+/*
+SQL Cheat Sheet
+*/
+
+/*Error Handling:
+1.) After using a query to SET a variable, check if it is null.
+	SET @sID = (SELECT storeID FROM tblSTORE WHERE storeName = @sName)
+		IF @sID IS NULL
+		BEGIN
+			PRINT 'Error has occured in uspGETStoreID, @sID is null';
+			THROW 400, 'Error has occured in uspGETStoreID, @sID is null', 1;
+		END
+2.) When running a transaction, before committing, check if any errors occured.
+	BEGIN TRANSACTION transactionName
+	--Do something
+	IF @@ERROR <> 0
+		BEGIN
+			PRINT 'Something went wrong with inserting into review, rolling back transaction...'
+			ROLLBACK TRANSACTION transactionName
+		END
+	ELSE
+		COMMIT TRANSACTION transactionName
+*/
+
+/*Stored Procedures (SPROC)
+1) Get Sprocs
+	CREATE PROCEDURE uspGETForeignID
+		@foreignCol --A column that helps identify the ID in the select query when using SET.
+		@foreignID INT OUTPUT
+	AS
+		SET @foreignID = (SELECT foreignID FROM foreignTable WHERE foreignCol = @foreignCol)
+		IF @foreignID IS NULL
+		BEGIN
+			PRINT 'ERROR HANDLING MESSAGE';
+			THROW 12830, 'ERROR HANDLING MESSAGE'
+		END
+	GO
+
+2) Insert Sprocs
+
+	CREATE PROCEDURE uspINSERTSomeRow
+		@foreignCol2 --Transfer all the parameters, besides the id param, from the get sproc here, give them a different name.
+		@someCol --Also make parameters for all columns to be inserted into the table that aren't FKs.
+		@...
+	AS
+	DECLARE @foreignID2 INT --We make our own version of the get sproc's ID in our current one as a variable to be processed in the get sproc.
+
+	EXEC uspGETForeignID --Now we execute the get sprocs to store into our declared variables above.
+	@foreignCol = @foreignCol2 --The left are the parameters from the get sproc, the right is our current parameters
+	@foreignID = @foreignID2 OUTPUT --Finally store the get sproc result into our fkID variable.
+
+	EXEC ... --Do this again for all declared fkIDs.
+
+	BEGIN TRANSACTION transactionName
+		INSERT INTO table (tableColumns)
+		VALUES(@foreignCol2, @someCol, @foreignID2) --slot all of our now fill parameters/variables into the table.
+	IF @@ERROR <> 0
+		BEGIN
+			PRINT 'ERROR HANDLING MESSAGE'
+			ROLLBACK TRANSACTION transactionName
+		END
+	ELSE
+		COMMIT TRANSACTION transactionName
+	GO
+
+*/
+
+
+/*User Defined Functions (UDF)
+
+1) Business Rules: CRAB DIES
+	CREATE FUNCTION fn_RuleName()
+	RETURNS INT 
+	AS
+	BEGIN
+		DECLARE @RET INT = 0
+		IF EXIST (Check if the there is such an entry in the table using a select query)
+		SET @RET = 1
+		RETURN @RET
+	END
+	GO
+1.1) Apply Business Rule to a table:
+	ALTER TABLE table
+	ADD CONSTRAINT someName
+	CHECK (DBO.fn_RuleName()=0)
+
+
+2) Computed Column: CRAB DR (The idea is that the table assigned this UDF will input the parameters, and take in the output as the value for the computed column.
+	CREATE FUNCTION fn_compColName(@paramPKID)
+	RETURNS [INT or NUMERIC(#,#)] --type depends on what should be stored in the computed column.
+	AS
+	BEGIN
+		DECLARE @RET [datatype from above] = (SELECT [A calculation using an aggregate function] FROM table
+												JOIN [any table related to calculation]
+												WHERE table.PKID = @paramPKID) 
+		RETURN @RET
+	END
+
+2.1) Applying Computed Columns to a table:
+	ALTER TABLE table 
+	ADD someName AS (DBO.fn_compColName(tablePKID))
+
+*/
+
+
+/*Temporary Objects
+
+1) Creating a View:
+	CREATE VIEW vwViewName
+	AS
+	[A SELECT query to store into view]
+1.1) Applying a View:
+	SELECT * FROM vwViewName WHERE [optionalCondition]
+1.2) Joining Views:
+	SELECT * FROM vwViewName1 A
+	JOIN vwViewName2 B ON A.MatchingID = B.MatchingID
+
+2) Temp Table (Inside the SELECT statement of a query):
+	INTO #tempTableName
+
+3) Creating a Table Variable:
+	DECLARE @tableVarName TABLE
+	(colPKID INT IDENTITY(1,1) PRIMARY KEY,
+	Col1 datatype NULL/NOT NULL,
+	Col2 datatype NULL/NOT NULL)
+3.1) Add data to Table Variable:
+	INSERT INTO @tableVarName (Col1, Col2)
+	SELECT [same amount of columns to be fitted into the cols above]
+	FROM tblREALTABLE
+
+4) Creating a CTE:
+	WITH CTE_cteName1 (col1, col2, col3)
+	AS ([A SELECT query from a real table]) A,
+	CTE_cteName2 (col4, col5, col6, col7) 
+	AS ([A different SELECT query you want to store in this cte]) B
+
+
+Usage Rationale:
+1) Views:
+	Saves a SELECT query to be reused and rerun.
+	-Good for ease of fairly repetitive use, and simplifying the environment for basic users.
+	-Bad when using Views inside Views, as the runtime overhead stacks.
+
+2) Temp Table:
+	Stores a table on the Disk, globally seen and used, until it is dropped by someone.
+	-Good for infrequeny access, storing noncritical complex query data, and just read/ripping data due to long time global access.
+	-Bad due to it's slow performance on the disk, and potential clutter if not dropped.
+
+3) Table Variable:
+	Commonly found in sprocs/UDFs, stores a table in a variable in memory that disappears after use in a query.
+	-Good for using complex queries to read, rip, and delete things inside the table variable with less resource use than temp tables when storing small datasets.
+	-Bad for long term storage of critical data as it disappears quickly after creation.
+
+4) CTE:
+	Stores a temporarily named result set, like a view, but exists for one query and disappears.
+	-Good for replacing views when permission to make views is denied, or when using ranking functions.
+	-Bad for long term storage of critical data as it disappears quickly after creation.
+*/
+
+
+
+/* Synthetic Transaction with Wrappers
+1) Creating a Wrapper
+	CREATE PROCEDURE wrapper_usp_INSERTSprocName
+	@Run INT 
+	AS
+
+	DECLARE variables to fit into the insert sproc parameters. 
+	(@intoSproc#)
+
+	DECLARE a variable for each FK in the table. These variable(s) will hold a PK from the foreign table(s) for each while loop run.
+	(@foreignRowPK#)
+
+	DECLARE a variable for each foreign table that gets their row count to use in getting a random pk in the loop (SELECT COUNT(*) FROM foreignTable).
+	(@foreignTableCount# = (SELECT COUNT(*) FROM foreignTable))
+
+
+	--This is the basic structure of our while loop. 
+	WHILE @Run > 0
+	BEGIN
+		[The rest of the stuff following goes here]
+
+		EXECUTE usp_INSERTSprocName
+			@param1 = @declaredVar1
+			@param2 = @declaredVar2
+			...
+		SET @Run = @Run-1 
+	END
+
+	--ASSUME that the following is inside the while loop right above the EXECUTE statement. We have 3 different variables to set:
+
+	--First, get a random row from the foreign table to store. Tip: Use the variables you made to hold a row from a foreign table (@foreignRowPK) and the		count variable (@foreignTableCount) 
+	SET @foreignRowPK1 = (SELECT RAND() * @foreignTableCount1 + 1) 
+	SET @foreignRowPK2 = (SELECT RAND() * @foreignTableCount2 + 1) 
+
+	--Second, handle each variables declared that can fit directly into the parameters that the insert sproc is asking for. Tip: use the @foreignRowPK ID to	help get the related information to the row currently inspected. Also some variables may ask for a completely different table than seen so far,		just join to the table with the @foreignRowPK id and use the WHERE clause to get the specific entry.
+	SET @intoSproc1 = (SELECT col FROM table WHERE tableID = @foreignRowPK1)
+	SET @intoSproc2 = (SELECT col FROM table WHERE tableID = @foreignRowPK1)
+
+	--Third, for the variables that don't take from another table that instead are user input based (think of the insert sproc, and every parameter above the   AS keyword) you need to hardcode something random.
+	For any date variables: (SELECT DATEADD(DAY, -(SELECT RAND() * 10000), GetDate()) )
+	For any INT variables: (SELECT RAND() * [make it as big or as small as you want])
+	For any VARCHAR variables: Hard code this one, or google it.
+
+	--Lastly just fill in each EXECUTE parameter with the variables provided. If there is a problem or if you forgot to fill up the variable, go back and do it.
+
+2) Using the Wrapper
+	EXEC wrapper_usp_INSERTSprocName
+	@Run = [whatever number of rows you want to add for the table in the INSERT sproc]
+	GO
+*/
+
+
+
+/*Multi-Alias Case Statements
+1) Creating a Case Statement
+	SELECT (Case
+		When (someVar1 </>/= condition) AND (someVar2 </>/= condition)
+			Then 'name'
+		...
+		Else 'anotherName'
+	End) as Label, Count(*) AS numSomething --how many people meet that case condition, like numPeople or numCustomers
+	FROM --for every someVar# above, make a SELECT query to get it.
+		(SELECT colPKID1, col2, aggregateFunction(col3) AS someVar1
+		FROM ...) A,
+		(SELECT colPKID1, col2, aggregateFunction(col3) AS someVar2
+		FROM ...) B 
+	WHERE A.colPKID = B.colPKID)
+	GROUP BY (SELECT (Case
+		When
+			Then
+		...
+		Else
+	End) --Group by the case statement you made in the SELECT statement, NOT BY THE ALIAS LABEL.
+*/
+
+
+/*Ranking with CTEs
+Checking whether something meets criteria.
+-- 2 criterias means making 2 CTEs
+-- Each criteria may ask for rank, dense_rank, or ntile.
+
+--2) Creating the ctes based on the requirements of the criterias. Assume there are two criterias:
+	WITH cte_firstCriteria (colPK, otherCols..., aggregateCol, rankFnCol) --Needs to be same amount as the cols returned inside. The official col names of the stuff inside.
+	--aggregateCol is a col made in the query using an aggregate function. rankFnCol uses the aggregate col as the order by for the chosen rank function.
+	AS
+		(SELECT tblColPK, otherTblCols..., aggregatefn(someCol), rankFn(ORDER BY aggregateFn(someCol))
+		 FROM table
+			JOIN foreignTbl ...
+		 WHERE conditions...
+		 GROUP BY tblColPK, otherTblCols...),
+	cte_secondCriteria (colPK2, otherCols2..., aggregateCol2, rankFnCol2) --colPK2 should be the same id as colPK.
+	AS 
+		(Another select query, but made for the second criteria. Use the query structure from above) --Use FROM the same table as the first cte.
+
+--2.1) Now display the results, but with the ranking conditions from the criteria:
+	SELECT A.*, B.rankFnCol2
+	FROM cte_firstCriteria A
+		JOIN cte_secondCriteria B ON A.colPK = B.colPK2
+	WHERE (A.rankFnCol </>/=/BETWEEN criteriaCondition)
+		AND (B.rankFnCol2 </>/=/BETWEEN criteriaCondition2)
+*/
